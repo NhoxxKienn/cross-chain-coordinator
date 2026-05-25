@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"strings"
 
 	"github.com/pkg/errors"
 	"perun.network/go-perun/channel"
@@ -56,7 +57,12 @@ func (c *CoordinatorHost) coordinate(ctx context.Context, ch *coordCh) error {
 
 	// Step 5: Dispatch to all chains via multi.Coordinator concurrently.
 	if err := c.coordinator.Coordinate(ctx, req, signedSubStates, coordSigs); err != nil {
-		return errors.WithMessage(err, "coordinate: dispatch failed")
+		if isAlreadyConcluded(err) {
+			// Channel already coordinated/concluded on-chain — treat as success.
+			// TODO: replace with typed error once go-perun exposes one.
+		} else {
+			return errors.WithMessage(err, "coordinate: dispatch failed")
+		}
 	}
 
 	ch.subChsAccess.Lock()
@@ -115,14 +121,14 @@ func (c *CoordinatorHost) retrieveSignedSubStates(ch *coordCh) ([]channel.Signed
 //	coordSigs[1] = sig over subStates[0].State
 //	coordSigs[2] = sig over subStates[1].State  ...
 func (c *CoordinatorHost) buildCoordSigs(
-	ch *coordCh,
+	_ *coordCh,
 	canonical *channel.State,
 	subStates []channel.SignedState,
 ) ([]wallet.Sig, error) {
 	coordSigs := make([]wallet.Sig, 0, 1+len(subStates))
 
 	// coordSigs[0]: coordinator signs parent canonical state.
-	parentSig, err := c.signState(ch.params, canonical)
+	parentSig, err := c.signState(canonical)
 	if err != nil {
 		return nil, errors.WithMessage(err, "signing parent canonical state")
 	}
@@ -130,7 +136,7 @@ func (c *CoordinatorHost) buildCoordSigs(
 
 	// coordSigs[1..n]: coordinator signs each sub-channel state in DFS order.
 	for i, ss := range subStates {
-		sig, err := c.signState(ss.Params, ss.State)
+		sig, err := c.signState(ss.State)
 		if err != nil {
 			return nil, errors.WithMessagef(err, "signing sub-channel state [%d]", i)
 		}
@@ -140,14 +146,23 @@ func (c *CoordinatorHost) buildCoordSigs(
 	return coordSigs, nil
 }
 
+// isAlreadyConcluded checks whether a Coordinate error means the channel is
+// already settled on-chain. Heuristic until go-perun exposes a typed error.
+func isAlreadyConcluded(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "already") || strings.Contains(s, "concluded")
+}
+
 // signState signs the encoded state with the coordinator's wallet account.
 // Uses channel.Backend.Sign which produces the same encoding as
 // Channel.encodeState() in Adjudicator.sol, accepted by
 // validateCoordinatorSignature() on-chain.
-func (c *CoordinatorHost) signState(params *channel.Params, state *channel.State) (wallet.Sig, error) {
-	sig, err := channel.Sign(c.acc, state, c.acc.Address().BackendID())
-	if err != nil {
-		return nil, errors.WithMessage(err, "signState: Backend.Sign failed")
+func (c *CoordinatorHost) signState(state *channel.State) (wallet.Sig, error) {
+	for b, acc := range c.acc {
+		sig, err := channel.Sign(acc, state, b)
+		if err == nil {
+			return sig, nil
+		}
 	}
-	return sig, nil
+	return nil, errors.New("signState: no valid signature found for any account")
 }

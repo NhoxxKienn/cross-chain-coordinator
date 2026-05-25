@@ -1,0 +1,10 @@
+private_key_path: ./sign_private.key
+coordinators:
+  - backend_id: 1
+    ledger_id: 1337
+    chainURL: "ws://127.0.0.1:8545"
+    adjudicator_addr: "0x..."
+  - backend_id: 1
+    ledger_id: 1338
+    chainURL: "ws://127.0.0.1:8546"
+    adjudicator_addr: "0x..."

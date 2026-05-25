@@ -13,16 +13,6 @@ import (
 
 const statesFromClientWaitTime = 1 * time.Millisecond
 
-// ErrSubChannelsPresent signals that an operation failed because subchannels
-// were present.
-var ErrSubChannelsPresent = errors.New("sub-channels present")
-
-// IsErrSubChannelsPresent returns whether the cause of the error was an
-// ErrSubChannelsPresent error.
-func IsErrSubChannelsPresent(err error) bool {
-	return errors.Is(err, ErrSubChannelsPresent)
-}
-
 // startWatchingLedger mirrors Watcher.StartWatchingLedgerChannel.
 // Called from handleNotifyWatchLedger after decoding the stream message.
 func (c *CoordinatorHost) startWatchingLedger(
@@ -79,15 +69,35 @@ func (c *CoordinatorHost) stopWatching(id channel.ID) error {
 
 	if ch.isSubChannel() {
 		delete(parent.subChs, id)
-	} else if len(ch.subChs) > 0 {
-		return errors.WithMessagef(ErrSubChannelsPresent,
-			"cannot de-register: %d sub-channels present for %v", len(ch.subChs), ch.id)
+	} else {
+		// Cascade: close all sub-channels before removing the parent.
+		// Closing the subscription terminates the sub-channel event loop goroutine.
+		for subID := range ch.subChs {
+			if subCh, ok := c.registry.retrieve(subID); ok {
+				close(subCh.done)
+				closeChain(subCh)
+				c.registry.remove(subID)
+				subCh.isClosed = true
+			}
+		}
 	}
 
 	closeChain(ch)
 	c.registry.remove(ch.id)
 	ch.isClosed = true
 	return nil
+}
+
+// validateCoordinatorDesignation rejects channels that are not designated for
+// this coordinator. Checks that Params.Coordinator contains an address matching
+// one of our accounts — if wrong, CalcID will mismatch on the client side.
+func (c *CoordinatorHost) validateCoordinatorDesignation(params *channel.Params) error {
+	for bID, addr := range params.Coordinator {
+		if acc, ok := c.acc[bID]; ok && acc.Address().Equal(addr) {
+			return nil
+		}
+	}
+	return errors.New("channel not designated for this coordinator")
 }
 
 // startWatching is the internal shared implementation.
@@ -97,6 +107,10 @@ func (c *CoordinatorHost) startWatching(
 	parent *coordCh,
 	signedState channel.SignedState,
 ) error {
+	if err := c.validateCoordinatorDesignation(signedState.Params); err != nil {
+		return err
+	}
+
 	id := signedState.State.ID
 
 	chInitializer := func() (*coordCh, error) {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"net"
-	"os"
 	"sync"
 	"time"
 
@@ -21,7 +20,7 @@ import (
 )
 
 type CoordinatorHost struct {
-	acc         wallet.Account
+	acc         map[wallet.BackendID]wallet.Account
 	host        host.Host
 	reservation *libp2pclient.Reservation
 	closer      context.CancelFunc
@@ -37,19 +36,10 @@ type CoordinatorHost struct {
 //	SetupRelayCoordinator initializes a libp2p host with relay capabilities and an address book.
 //
 // It listens on the specified port and uses the provided key file for identity.
-func SetupRelayCoordinator(keyFile string, acc wallet.Account, coordinator *multi.Coordinator) (*CoordinatorHost, error) {
+func SetupRelayCoordinator(privKey crypto.PrivKey, acc map[wallet.BackendID]wallet.Account, coordinator *multi.Coordinator) (*CoordinatorHost, error) {
 	relayInfo, _, err := getRelayServerInfo()
 	if err != nil {
 		return nil, errors.WithMessage(err, "getting relay server info")
-	}
-
-	keyBytes, err := os.ReadFile(keyFile)
-	if err != nil {
-		return nil, err
-	}
-	privKey, err := crypto.UnmarshalPrivateKey(keyBytes)
-	if err != nil {
-		return nil, err
 	}
 
 	h, err := libp2p.New(
