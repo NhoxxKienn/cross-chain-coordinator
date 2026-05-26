@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	stderrors "errors"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -14,14 +15,25 @@ import (
 //  2. Collects signed sub-states in DFS order — mirrors retrieveLatestSubStates.
 //  3. Signs each state (parent + all sub-channels) with coordinator key — coordSigs in DFS order.
 //  4. Submits via c.coordinator.Coordinate() which dispatches to all chains.
+//
+// The call is bounded by c.coordinateDeadline() so a stuck chain cannot pin
+// the goroutine forever, and tracked in c.coordWg so CoordinatorHost.Wait can
+// drain it cleanly during shutdown.
 func (c *CoordinatorHost) coordinate(ctx context.Context, ch *coordCh) error {
+	c.coordWg.Add(1)
+	defer c.coordWg.Done()
+
+	ctx, cancel := context.WithTimeout(ctx, c.coordinateDeadline())
+	defer cancel()
+
 	ch.subChsAccess.Lock()
 
 	// Step 1: Select canonical signed state — highest version across all chains.
 	// selectCanonicalSignedState returns the full SignedState (state + participant sigs)
-	// from the best chainDispute record.
+	// from the best chainDispute record. It can return nil when no chain recorded
+	// a valid state yet — dereferencing canonical.State without this guard panics.
 	canonical := ch.selectCanonicalSignedState()
-	if canonical.State == nil {
+	if canonical == nil || canonical.State == nil {
 		ch.subChsAccess.Unlock()
 		return errors.New("coordinate: no canonical state available")
 	}
@@ -147,9 +159,18 @@ func (c *CoordinatorHost) buildCoordSigs(
 }
 
 // isAlreadyConcluded checks whether a Coordinate error means the channel is
-// already settled on-chain. Heuristic until go-perun exposes a typed error.
+// already settled on-chain. Prefers the typed sentinel
+// channel.ErrChannelAlreadyConcluded (exposed by go-perun for exactly this
+// purpose) and falls back to a substring match on the on-chain revert reasons
+// for cases where the eth-backend has not yet wrapped the error.
 func isAlreadyConcluded(err error) bool {
-	s := err.Error()
+	if err == nil {
+		return false
+	}
+	if stderrors.Is(err, channel.ErrChannelAlreadyConcluded) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "already") || strings.Contains(s, "concluded")
 }
 

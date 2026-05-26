@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"time"
 
 	"cross-chain-coordinator/backends"
 	"cross-chain-coordinator/service"
@@ -20,14 +19,13 @@ import (
 
 func main() {
 	mode := flag.String("mode", "relay", "Mode to run: relay | keygen")
-	flushInterval := flag.Duration("flush", 30*24*time.Hour, "Flush interval")
 	keyFile := flag.String("keyfile", "test_private.key", "libp2p identity key file")
 	configFile := flag.String("config", "devnet_config.yaml", "Coordinator config file")
 	flag.Parse()
 
 	switch *mode {
 	case "relay":
-		if err := runRelay(*flushInterval, *keyFile, *configFile); err != nil {
+		if err := runRelay(*keyFile, *configFile); err != nil {
 			log.Printf("Relay failed: %v", err)
 			os.Exit(1)
 		}
@@ -39,9 +37,7 @@ func main() {
 	}
 }
 
-func runRelay(flushInterval time.Duration, keyFile, configFile string) error {
-	_ = flushInterval
-
+func runRelay(keyFile, configFile string) error {
 	cfg, err := backends.LoadConfig(configFile)
 	if err != nil {
 		return err

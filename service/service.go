@@ -7,11 +7,13 @@ import (
 	"cross-chain-coordinator/coordinator"
 
 	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // Service wraps a running CoordinatorHost. Call Close to shut it down.
 type Service struct {
 	*coordinator.CoordinatorHost
+	peerID peer.ID
 }
 
 // New wires the ETH backend and starts the libp2p relay coordinator.
@@ -33,5 +35,15 @@ func New(
 		return nil, err
 	}
 
-	return &Service{CoordinatorHost: host}, nil
+	peerID, err := peer.IDFromPrivateKey(libp2pKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Service{CoordinatorHost: host, peerID: peerID}, nil
+}
+
+// PeerID returns the libp2p peer.ID of this coordinator, which clients can use to
+func (s *Service) PeerID() peer.ID {
+	return s.peerID
 }

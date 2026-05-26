@@ -173,8 +173,14 @@ func (ch *coordCh) handleEventsFromChain(coordinator *CoordinatorHost, chRegistr
 		cancel()
 	}()
 
-	for e, ledgerKey, ok := ch.eventsFromChainSub.NextWithKey(); e != nil; e = ch.eventsFromChainSub.Next() {
-		if !ok {
+	// NOTE: this loop must call NextWithKey() every iteration. The previous
+	// `for init; cond; post` form only updated `e` in the post statement,
+	// leaving `ledgerKey` frozen at the first event's value — every
+	// subsequent RegisteredEvent / ProgressedEvent was attributed to the
+	// first ledger, silently corrupting per-chain dispute tracking.
+	for {
+		e, ledgerKey, ok := ch.eventsFromChainSub.NextWithKey()
+		if !ok || e == nil {
 			break
 		}
 		switch e := e.(type) {

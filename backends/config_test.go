@@ -64,10 +64,21 @@ coordinators:
 	assert.Equal(t, "0xABCD", cfg.Coordinators[0].AdjudicatorAddr)
 }
 
+// validCoord returns a fully-populated BackendCoordinatorConfig so individual
+// tests can override only the field they're exercising.
+func validCoord(backendID uint32, ledgerID uint64) BackendCoordinatorConfig {
+	return BackendCoordinatorConfig{
+		BackendID:       backendID,
+		LedgerID:        ledgerID,
+		ChainURL:        "ws://127.0.0.1:8545",
+		AdjudicatorAddr: "0xABCD",
+	}
+}
+
 func TestValidate_MissingPrivateKeyPath(t *testing.T) {
 	cfg := Config{
 		PrivateKeyPath: "",
-		Coordinators:   []BackendCoordinatorConfig{{BackendID: 1, LedgerID: 1337}},
+		Coordinators:   []BackendCoordinatorConfig{validCoord(1, 1337)},
 	}
 	assert.Error(t, cfg.Validate())
 }
@@ -75,7 +86,7 @@ func TestValidate_MissingPrivateKeyPath(t *testing.T) {
 func TestValidate_WhitespacePrivateKeyPath(t *testing.T) {
 	cfg := Config{
 		PrivateKeyPath: "   ",
-		Coordinators:   []BackendCoordinatorConfig{{BackendID: 1, LedgerID: 1337}},
+		Coordinators:   []BackendCoordinatorConfig{validCoord(1, 1337)},
 	}
 	assert.Error(t, cfg.Validate())
 }
@@ -92,8 +103,8 @@ func TestValidate_DuplicateKey(t *testing.T) {
 	cfg := Config{
 		PrivateKeyPath: "./key.hex",
 		Coordinators: []BackendCoordinatorConfig{
-			{BackendID: 1, LedgerID: 1337},
-			{BackendID: 1, LedgerID: 1337}, // duplicate
+			validCoord(1, 1337),
+			validCoord(1, 1337), // duplicate
 		},
 	}
 	err := cfg.Validate()
@@ -105,8 +116,8 @@ func TestValidate_SameBackendDifferentLedger(t *testing.T) {
 	cfg := Config{
 		PrivateKeyPath: "./key.hex",
 		Coordinators: []BackendCoordinatorConfig{
-			{BackendID: 1, LedgerID: 1337},
-			{BackendID: 1, LedgerID: 1338},
+			validCoord(1, 1337),
+			validCoord(1, 1338),
 		},
 	}
 	assert.NoError(t, cfg.Validate())
@@ -116,9 +127,43 @@ func TestValidate_SameLedgerDifferentBackend(t *testing.T) {
 	cfg := Config{
 		PrivateKeyPath: "./key.hex",
 		Coordinators: []BackendCoordinatorConfig{
-			{BackendID: 1, LedgerID: 1337},
-			{BackendID: 2, LedgerID: 1337},
+			validCoord(1, 1337),
+			validCoord(2, 1337),
 		},
 	}
 	assert.NoError(t, cfg.Validate())
+}
+
+func TestValidate_HTTPChainURLRejected(t *testing.T) {
+	c := validCoord(1, 1337)
+	c.ChainURL = "http://127.0.0.1:8545"
+	cfg := Config{PrivateKeyPath: "./key.hex", Coordinators: []BackendCoordinatorConfig{c}}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ws://")
+}
+
+func TestValidate_EmptyChainURLRejected(t *testing.T) {
+	c := validCoord(1, 1337)
+	c.ChainURL = ""
+	cfg := Config{PrivateKeyPath: "./key.hex", Coordinators: []BackendCoordinatorConfig{c}}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "chainURL is required")
+}
+
+func TestValidate_WSSChainURLAccepted(t *testing.T) {
+	c := validCoord(1, 1337)
+	c.ChainURL = "wss://example.com:443"
+	cfg := Config{PrivateKeyPath: "./key.hex", Coordinators: []BackendCoordinatorConfig{c}}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestValidate_EmptyAdjudicatorAddrRejected(t *testing.T) {
+	c := validCoord(1, 1337)
+	c.AdjudicatorAddr = ""
+	cfg := Config{PrivateKeyPath: "./key.hex", Coordinators: []BackendCoordinatorConfig{c}}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "adjudicator_addr is required")
 }

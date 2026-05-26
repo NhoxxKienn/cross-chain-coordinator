@@ -19,6 +19,12 @@ import (
 	"perun.network/go-perun/wallet"
 )
 
+// defaultCoordinateTimeout caps a single coordinate() call (subscribe + wait +
+// on-chain coordinate tx + confirmation). It must accommodate the longest
+// expected ChallengeDuration plus concludeWaitSlack (12 s on the ETH backend)
+// plus a generous block-mining margin.
+const defaultCoordinateTimeout = 5 * time.Minute
+
 type CoordinatorHost struct {
 	acc         map[wallet.BackendID]wallet.Account
 	host        host.Host
@@ -29,8 +35,44 @@ type CoordinatorHost struct {
 	registry    *registry
 	coordinator *multi.Coordinator
 
+	// coordinateTimeout caps each in-flight coordinate() call.
+	// Defaults to defaultCoordinateTimeout; tests may override before use.
+	coordinateTimeout time.Duration
+	// coordWg tracks every in-flight coordinate() goroutine so Wait can drain
+	// them cleanly before backend shutdown (otherwise SubscribeNewHead inside
+	// ConfirmTransaction can be torn down mid-call, producing a nil receipt
+	// dereference in the ETH backend).
+	coordWg sync.WaitGroup
+
 	relayMu   sync.Mutex
 	relayInfo *peer.AddrInfo
+}
+
+// Wait blocks until all in-flight coordinate() calls finish or timeout elapses.
+// Callers (tests, graceful-shutdown paths) should invoke this before tearing
+// down the underlying chain backend.
+func (c *CoordinatorHost) Wait(timeout time.Duration) error {
+	done := make(chan struct{})
+	go func() {
+		c.coordWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return errors.New("CoordinatorHost.Wait: timeout waiting for in-flight coordinate calls")
+	}
+}
+
+// coordinateDeadline returns the configured per-coordinate timeout, falling
+// back to the package default for zero-valued hosts (e.g. tests constructing
+// CoordinatorHost directly without SetupRelayCoordinator).
+func (c *CoordinatorHost) coordinateDeadline() time.Duration {
+	if c.coordinateTimeout > 0 {
+		return c.coordinateTimeout
+	}
+	return defaultCoordinateTimeout
 }
 
 //	SetupRelayCoordinator initializes a libp2p host with relay capabilities and an address book.
@@ -76,14 +118,15 @@ func SetupRelayCoordinator(privKey crypto.PrivKey, acc map[wallet.BackendID]wall
 	}
 
 	c := &CoordinatorHost{
-		acc:         acc,
-		host:        h,
-		reservation: resv,
-		closer:      cancel,
-		ctx:         ctx,
-		relayInfo:   relayInfo,
-		registry:    newRegistry(),
-		coordinator: coordinator,
+		acc:               acc,
+		host:              h,
+		reservation:       resv,
+		closer:            cancel,
+		ctx:               ctx,
+		relayInfo:         relayInfo,
+		registry:          newRegistry(),
+		coordinator:       coordinator,
+		coordinateTimeout: defaultCoordinateTimeout,
 	}
 
 	// Register stream handler — clients dial this protocol ID to register channels

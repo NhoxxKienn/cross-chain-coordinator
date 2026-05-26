@@ -27,6 +27,14 @@ chains and uses this `perun-eth-backend` repository as the client library.
 10. [Running the PoC](#10-running-the-poc)
 11. [Expected Output](#11-expected-output)
 12. [Key Invariants Summary](#12-key-invariants-summary)
+13. [Real Coordinator Service (`cross-chain-coordinator`)](#13-real-coordinator-service-cross-chain-coordinator)
+    - 13.1 [Layout](#131-layout)
+    - 13.2 [Configuration](#132-configuration-devnet_configyaml)
+    - 13.3 [Running the service](#133-running-the-service)
+    - 13.4 [Client-side wiring](#134-client-side-wiring-replaces-93-for-end-to-end-poc)
+    - 13.5 [Event-driven coordination flow](#135-event-driven-coordination-flow)
+    - 13.6 [Why the PoC keeps the inline version](#136-why-the-poc-keeps-the-inline-simplified-version)
+    - 13.7 [Known gaps and TODOs](#137-known-gaps-and-todos)
 
 ---
 
@@ -53,12 +61,12 @@ root cause of the attack.
 
 ### Balance setup
 
-| Version        | Alice A1 | Bob A1 | Alice A2 | Bob A2 | Bob total |
-|----------------|----------|--------|----------|--------|-----------|
-| v0 (init)      | 8 ETH    | 2 ETH  | 2 ETH    | 8 ETH  | 10        |
-| v1 (agreed)    | 5        | 5      | 3        | 7      | 12        |
-| v2 (secret)    | 1        | 9      | 5        | 5      | 14        |
-| **Attack outcome** (v2 on A1, v1 on A2) | **1** | **9** | **3** | **7** | **16** |
+| Version                                 | Alice A1 | Bob A1 | Alice A2 | Bob A2 | Bob total |
+| --------------------------------------- | -------- | ------ | -------- | ------ | --------- |
+| v0 (init)                               | 8 ETH    | 2 ETH  | 2 ETH    | 8 ETH  | 10        |
+| v1 (agreed)                             | 5        | 5      | 3        | 7      | 12        |
+| v2 (secret)                             | 1        | 9      | 5        | 5      | 14        |
+| **Attack outcome** (v2 on A1, v1 on A2) | **1**    | **9**  | **3**    | **7**  | **16**    |
 
 Bob profits **+4** above the honest v1 baseline by registering different versions
 on each chain.
@@ -125,14 +133,14 @@ v1, the coordinator will coordinate v2 on both chains so the final payout is uni
 
 Key contract invariants (from `Adjudicator.sol` / `MultiLedger.sol`):
 
-| Check | Solidity revert message |
-|---|---|
-| `coordinate()` requires prior `register()` | `"not registered"` |
-| `coordinate()` requires `block.timestamp >= dispute.timeout` | `"refutation timeout not passed"` |
-| `coordinate()` requires valid coordinator ECDSA sig over state | `"invalid coordinator signature"` |
-| `coordinate()` requires state version ≥ stored version | `"invalid version"` |
-| `register()` in COORDINATED phase is rejected | `"incorrect phase"` |
-| `conclude()` without coordination on multi-ledger channels | `"coordinated settlement required"` |
+| Check                                                          | Solidity revert message             |
+| -------------------------------------------------------------- | ----------------------------------- |
+| `coordinate()` requires prior `register()`                     | `"not registered"`                  |
+| `coordinate()` requires `block.timestamp >= dispute.timeout`   | `"refutation timeout not passed"`   |
+| `coordinate()` requires valid coordinator ECDSA sig over state | `"invalid coordinator signature"`   |
+| `coordinate()` requires state version ≥ stored version         | `"invalid version"`                 |
+| `register()` in COORDINATED phase is rejected                  | `"incorrect phase"`                 |
+| `conclude()` without coordination on multi-ledger channels     | `"coordinated settlement required"` |
 
 ---
 
@@ -140,14 +148,14 @@ Key contract invariants (from `Adjudicator.sol` / `MultiLedger.sol`):
 
 ### System tools
 
-| Tool          | Version       | Purpose |
-|---------------|---------------|---------|
-| Go            | ≥ 1.24        | PoC implementation (`go.mod` in this repo uses `go 1.24.0`) |
-| Node.js       | ≥ 18          | Hardhat |
-| npm           | any           | Hardhat packages |
-| Hardhat       | ≥ 2.22        | Two local EVM chains |
-| solc          | ≥ 0.8.15      | Compile contracts (`pragma solidity ^0.8.15`) |
-| abigen        | same as geth  | Generate Go bindings from contract ABI |
+| Tool    | Version      | Purpose                                                     |
+| ------- | ------------ | ----------------------------------------------------------- |
+| Go      | ≥ 1.24       | PoC implementation (`go.mod` in this repo uses `go 1.24.0`) |
+| Node.js | ≥ 18         | Hardhat                                                     |
+| npm     | any          | Hardhat packages                                            |
+| Hardhat | ≥ 2.22       | Two local EVM chains                                        |
+| solc    | ≥ 0.8.15     | Compile contracts (`pragma solidity ^0.8.15`)               |
+| abigen  | same as geth | Generate Go bindings from contract ABI                      |
 
 ### Go dependencies (see Section 8 for exact `go.mod`)
 
@@ -407,17 +415,18 @@ package poc
 
 import (
     "context"
+    "crypto/ecdsa"
+    "encoding/json"
     "fmt"
     "math/big"
+    "os"
 
-    "github.com/ethereum/go-ethereum/accounts/abi/bind"
     "github.com/ethereum/go-ethereum/common"
     "github.com/ethereum/go-ethereum/common/hexutil"
     "github.com/ethereum/go-ethereum/core/types"
     "github.com/ethereum/go-ethereum/ethclient"
     "github.com/ethereum/go-ethereum/rpc"
     hdwallet "github.com/miguelmota/go-ethereum-hdwallet"
-    "crypto/ecdsa"
 )
 
 // ChainConfig holds all chain-specific handles.
@@ -482,12 +491,56 @@ func DeriveKey(index uint32) (*ecdsa.PrivateKey, error) {
     return w.PrivateKey(acc)
 }
 
-// LoadChains reads addresses.json (written by deploy.js) and returns ChainConfigs
-// for chainA and chainB.
+// LoadChains reads hardhat/addresses.json (written by deploy.js) and returns
+// ChainConfigs for chainA and chainB.
 func LoadChains() (chainA, chainB *ChainConfig, err error) {
-    // In a real implementation: unmarshal addresses.json and dial both nodes.
-    // Stub — fill with your JSON parsing logic.
-    panic("implement: parse addresses.json and create ChainConfigs")
+    data, err := os.ReadFile("../hardhat/addresses.json")
+    if err != nil {
+        return nil, nil, fmt.Errorf("reading addresses.json: %w", err)
+    }
+    var addrs struct {
+        ChainA struct {
+            Adjudicator string `json:"adjudicator"`
+            AssetHolder string `json:"assetHolder"`
+        } `json:"chainA"`
+        ChainB struct {
+            Adjudicator string `json:"adjudicator"`
+            AssetHolder string `json:"assetHolder"`
+        } `json:"chainB"`
+    }
+    if err := json.Unmarshal(data, &addrs); err != nil {
+        return nil, nil, fmt.Errorf("parsing addresses.json: %w", err)
+    }
+    chainA, err = NewChainConfig("http://127.0.0.1:8545", 1337,
+        addrs.ChainA.Adjudicator, addrs.ChainA.AssetHolder)
+    if err != nil {
+        return nil, nil, fmt.Errorf("connecting chain A: %w", err)
+    }
+    chainB, err = NewChainConfig("http://127.0.0.1:8546", 1338,
+        addrs.ChainB.Adjudicator, addrs.ChainB.AssetHolder)
+    if err != nil {
+        return nil, nil, fmt.Errorf("connecting chain B: %w", err)
+    }
+    return chainA, chainB, nil
+}
+
+// ethBalanceReader reads the native ETH balance of an account on one chain.
+// It implements the BalanceReader interface defined in participant.go.
+type ethBalanceReader struct {
+    client *ethclient.Client
+    addr   common.Address
+}
+
+func newETHBalanceReader(client *ethclient.Client, addr common.Address) *ethBalanceReader {
+    return &ethBalanceReader{client: client, addr: addr}
+}
+
+func (r *ethBalanceReader) Balance() *big.Int {
+    bal, err := r.client.BalanceAt(context.Background(), r.addr, nil)
+    if err != nil {
+        return big.NewInt(0)
+    }
+    return bal
 }
 ```
 
@@ -503,7 +556,6 @@ import (
     "testing"
 
     "github.com/ethereum/go-ethereum/accounts"
-    "github.com/ethereum/go-ethereum/core/types"
     "github.com/ethereum/go-ethereum/crypto"
     "github.com/stretchr/testify/require"
 
@@ -638,6 +690,8 @@ func NewParticipant(t *testing.T, key *ecdsa.PrivateKey, bus wire.Bus, chainA, c
         WalletAcc:  walletAccMap,
         AdjA:       adjA,
         AdjB:       adjB,
+        BalA:       newETHBalanceReader(chainA.Client, addr.Address),
+        BalB:       newETHBalanceReader(chainB.Client, addr.Address),
         ethAccount: ethAcc,
     }
 }
@@ -1220,18 +1274,18 @@ coordinator locks that outcome uniformly on both chains.
 
 ## 12. Key Invariants Summary
 
-| Layer | Invariant | Where enforced |
-|---|---|---|
-| Contract | `coordinate()` rejected if not registered | `coordinateSingle`: `"not registered"` |
-| Contract | `coordinate()` rejected before timeout | `coordinateSingle`: `block.timestamp >= dispute.timeout` |
-| Contract | Coordinator ECDSA sig required | `Channel.validateCoordinatorSignature` |
-| Contract | `register()` rejected in COORDINATED phase | `registerSingle`: `dispute.phase == DISPUTE` else `"incorrect phase"` |
-| Contract | `conclude()` on coordinated-eligible channels requires COORDINATED phase | `concludeSingle`: `"coordinated settlement required"` |
-| Contract | `isCoordinatedEligible` requires `coordinator != address(0)` AND multi-chain assets | `MultiLedger.sol` |
-| go-perun multi | Both chains coordinated concurrently | `multi.Coordinator.dispatch` |
-| go-perun client | `Settle` calls `ensureCoordinated` before `Withdraw` | `client.Channel.Settle` |
-| go-perun watcher | Dispute replicated to all chains | `watcher/local` multi-ledger path |
-| Timing | All timeouts use `block.timestamp` (seconds), not block number | `Adjudicator.sol` (use `evm_increaseTime` in tests) |
+| Layer            | Invariant                                                                           | Where enforced                                                        |
+| ---------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Contract         | `coordinate()` rejected if not registered                                           | `coordinateSingle`: `"not registered"`                                |
+| Contract         | `coordinate()` rejected before timeout                                              | `coordinateSingle`: `block.timestamp >= dispute.timeout`              |
+| Contract         | Coordinator ECDSA sig required                                                      | `Channel.validateCoordinatorSignature`                                |
+| Contract         | `register()` rejected in COORDINATED phase                                          | `registerSingle`: `dispute.phase == DISPUTE` else `"incorrect phase"` |
+| Contract         | `conclude()` on coordinated-eligible channels requires COORDINATED phase            | `concludeSingle`: `"coordinated settlement required"`                 |
+| Contract         | `isCoordinatedEligible` requires `coordinator != address(0)` AND multi-chain assets | `MultiLedger.sol`                                                     |
+| go-perun multi   | Both chains coordinated concurrently                                                | `multi.Coordinator.dispatch`                                          |
+| go-perun client  | `Settle` calls `ensureCoordinated` before `Withdraw`                                | `client.Channel.Settle`                                               |
+| go-perun watcher | Dispute replicated to all chains                                                    | `watcher/local` multi-ledger path                                     |
+| Timing           | All timeouts use `block.timestamp` (seconds), not block number                      | `Adjudicator.sol` (use `evm_increaseTime` in tests)                   |
 
 ### Timing diagram (with coordinator)
 
@@ -1255,30 +1309,303 @@ COORDINATED at v2, `registerSingle` rejects any further state on either chain.
 
 ---
 
+## 13. Real Coordinator Service (`cross-chain-coordinator`)
+
+The inline `CoordinatorService` in Section 9.3 is a **manual-trigger test double** — the
+caller picks the canonical state and invokes `Coordinate(ctx, req, subStates)` directly.
+The production coordinator (this repository, `cross-chain-coordinator/`) wraps that same
+primitive in a libp2p relay service that:
+
+- accepts watch notifications from go-perun clients over a circuit relay,
+- subscribes to on-chain `RegisteredEvent` / `ProgressedEvent` / `CoordinatedEvent` /
+  `ConcludedEvent` on every chain,
+- waits the per-chain challenge duration (wall-clock),
+- selects the highest-version canonical state across all chains,
+- builds DFS-ordered `coordSigs` and dispatches `coordinate()` to all chains concurrently.
+
+### 13.1 Layout
+
+```
+cross-chain-coordinator/
+├── main.go                       # CLI: -mode keygen | -mode relay
+├── devnet_config.yaml            # per-chain config (see 13.2)
+├── service/
+│   └── service.go                # service.New(coords, ecdsaKey, libp2pKey) thin wrapper
+├── backends/
+│   ├── config.go                 # YAML loader + Validate (uniqueness on backend_id/ledger_id)
+│   ├── multicoordinator.go       # builds *multi.Coordinator + wallet.Account per backend
+│   └── ethcoordinator.go         # one *ethchannel.Coordinator per chain
+└── coordinator/
+    ├── host.go                   # libp2p host, relay reservation (renewed every 4 min)
+    ├── handlers.go               # JSON-decode + dispatch for 3 protocol streams
+    ├── protocol.go               # protocol IDs, request/response types
+    ├── registry.go               # in-memory coordCh + registry, per-chain dispute records
+    ├── watcher.go                # startWatching*, event loop, awaitFinalisationAndCoordinate
+    └── coordinator.go            # coordinate(), selectCanonicalSignedState, buildCoordSigs
+```
+
+| File                                                     | Role                                                                                                                           |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `main.go`                                                | `-mode keygen` writes libp2p identity; `-mode relay` runs the service                                                          |
+| `backends/multicoordinator.go: SetupMultiCoordinator`    | Per chain in YAML, registers an `*ethchannel.Coordinator` under `ethchannel.MakeLedgerBackendID(big.NewInt(ledgerID))`         |
+| `coordinator/host.go: SetupRelayCoordinator`             | `libp2p.New(NoListenAddrs, EnableRelay)`, dials `relay.perun.network:5574`, reserves a slot, registers three stream handlers   |
+| `coordinator/watcher.go: handleEventsFromChain`          | Single goroutine per channel; consumes the multi-ledger `*multi.AdjudicatorSubscription` and routes events                     |
+| `coordinator/watcher.go: awaitFinalisationAndCoordinate` | Spawned on first `RegisteredEvent`; **wall-clock** sleep for `ChallengeDuration`, then calls `coordinator.coordinate(ctx, ch)` |
+| `coordinator/coordinator.go: coordinate`                 | `selectCanonicalSignedState` → `retrieveSignedSubStates` (DFS) → `buildCoordSigs` → `multi.Coordinator.Coordinate`             |
+
+### 13.2 Configuration (`devnet_config.yaml`)
+
+```yaml
+private_key_path: ./sign_private.key   # 64-char hex ECDSA key (one line, no 0x prefix)
+coordinators:
+  - backend_id: 1                       # ethwallet.BackendID == 1
+    ledger_id: 1337                     # Chain A chain ID
+    chainURL: "ws://127.0.0.1:8545"     # WebSocket endpoint for SubscribeNewHead
+    adjudicator_addr: "0xDEADBEEF..."   # deployed Adjudicator address on chain 1337
+  - backend_id: 1
+    ledger_id: 1338
+    chainURL: "ws://127.0.0.1:8546"
+    adjudicator_addr: "0xCAFEBABE..."
+```
+
+Important notes:
+
+- **`chainURL` must be `ws://` or `wss://`.** The `ethchannel.Coordinator` calls
+  `SubscribeNewHead` inside `BlockTimeout.Wait` and `confirmNTimes`; the JSON-RPC HTTP
+  transport does not support subscriptions and will silently fail at first use.
+- **The ECDSA key is the coordinator's signing key.** Its derived ETH address is what
+  clients must embed via `client.WithCoordinator(map[BackendID]wallet.Address{1: addr})`
+  at channel-open time. Channel IDs are derived from `Params` including this map — a
+  mismatch causes `CalcID` to differ on the client side and the channel is unrecognisable.
+- **The libp2p key (`-keyfile`) is independent of the ECDSA key** and determines the
+  service's `peer.ID`. Keep it stable across restarts — clients hardcode this peer ID.
+- `backends/config.go: Validate` rejects duplicate `backend_id/ledger_id` pairs.
+
+### 13.3 Running the service
+
+```bash
+# 1) Generate the libp2p identity (one-time). Despite the filename, this writes an
+#    RSA-2048 libp2p private key (NOT an ECDSA key).
+go run main.go -mode keygen -keyfile sign_private.key
+
+# 2) Generate the ECDSA signing key separately (one-time). The path is whatever
+#    `private_key_path` in your YAML points at.
+openssl rand -hex 32 > coord_ecdsa.key
+# Update devnet_config.yaml: private_key_path: ./coord_ecdsa.key
+
+# 3) Start the relay coordinator.
+go run main.go -mode relay -keyfile sign_private.key -config devnet_config.yaml
+# Logs: "Relay server started with ID: 12D3KooW..."   ← this is the peer.ID
+```
+
+The service connects to `relay.perun.network:5574` (relay peer ID
+`QmcxeYpYpYPX4J3478YZUaxFytYfUDbNe1jUWVYeZjL3gY`, hardcoded in
+`coordinator/protocol.go: relayID`), reserves a relay slot (renewed every 4 minutes),
+and registers three stream handlers:
+
+| Protocol ID                              | Triggered by client API                             |
+| ---------------------------------------- | --------------------------------------------------- |
+| `/coordinator/notify-watch-ledger/1.0.0` | `RelayCoordinatorNotifier.NotifyWatchLedgerChannel` |
+| `/coordinator/notify-watch-sub/1.0.0`    | `RelayCoordinatorNotifier.NotifyWatchSubChannel`    |
+| `/coordinator/notify-stop-watch/1.0.0`   | `RelayCoordinatorNotifier.NotifyStopWatch`          |
+
+All inbound streams arrive via the circuit relay — the coordinator never listens
+directly (`libp2p.NoListenAddrs`).
+
+### 13.4 Client-side wiring (replaces 9.3 for end-to-end PoC)
+
+To drive the real service over libp2p instead of calling `charlie.Coordinate(...)`
+inline, replace the test-double `CoordinatorService` with the relay notifier:
+
+```go
+import (
+    libp2pwire "perun.network/go-perun/wire/net/libp2p"
+    "perun.network/go-perun/client"
+)
+
+// One per participant — must be installed BEFORE the first ProposeChannel.
+account, err := libp2pwire.NewAccount(privKey /* + dialer/listener config */)
+require.NoError(err)
+// coordinatorPeerID is the peer.ID printed by the running coordinator service
+pid, err := peer.Decode("<COORDINATOR_PEER_ID>")
+require.NoError(err)
+notifier := libp2pwire.NewRelayCoordinatorNotifier(account, pid)
+client.EnableCoordinationNotifier(notifier)
+
+// Channel proposals must include the coordinator's address.
+prop, err := client.NewLedgerChannelProposal(
+    challengeDuration, alice.WalletAddr, initAlloc, parts,
+    client.WithCoordinator(map[wallet.BackendID]wallet.Address{1: charlieEthAddr}),
+)
+```
+
+When `ProposeChannel` runs, `RelayCoordinatorNotifier.NotifyWatchLedgerChannel`
+opens a circuit-relay stream to the coordinator's `peer.ID` (passed at notifier
+construction time), JSON-encodes the `SignedState`, and waits for the OK
+response. The coordinator service then watches all chains automatically — the
+PoC's manual `charlie.Coordinate(...)` call is removed entirely.
+
+> Earlier revisions of the go-perun fork hardcoded a placeholder
+> `const coordID = "coordinator"` in
+> `wire/net/libp2p/coordinator.go`, forcing a fork-rebuild to point clients at
+> a real coordinator. As of fork commit `a05990e2cb40` the const is gone:
+> `NewRelayCoordinatorNotifier(acc, coordPeerID)` takes the coordinator's
+> `peer.ID` as a runtime argument, so the coordinator's identity is now
+> ordinary deployment config rather than a compile-time blocker.
+
+### 13.5 Event-driven coordination flow
+
+After notification reaches the service, no caller intervention is required:
+
+```
+NotifyWatchLedgerChannel(signedState)
+    │
+    ▼
+handlers.go: handleNotifyWatchLedger
+    │
+    ▼
+watcher.go: startWatchingLedger → startWatching
+    │
+    ├─ validateCoordinatorDesignation       (checks Params.Coordinator has our address)
+    ├─ multi.Coordinator.Subscribe(ctx, id) (one ethchannel sub per chain)
+    └─ spawn handleEventsFromChain goroutine
+            │
+            ▼
+        for ev := range *multi.AdjudicatorSubscription:
+            *channel.RegisteredEvent  → handleRegisteredEvent
+                                          - record chainDisputes[ledger]{version, state, timeout}
+                                          - on first registration: spawn awaitFinalisationAndCoordinate
+            *channel.ProgressedEvent  → handleProgressedEvent  (reset that chain's timeout)
+            *channel.CoordinatedEvent → registry.remove(id) + return (channel finalised)
+            *channel.ConcludedEvent   → registry.remove(id) + return
+
+awaitFinalisationAndCoordinate (one per channel)
+    │
+    ▼
+loop until every chainDispute is finalised:
+    for each unfinalised key:
+        wait time.Until(d.timeout) using time.After   ← WALL-CLOCK, not block.timestamp
+        mark d.finalised = true
+    │
+    ▼
+isReadyForCoordination()?
+    │  yes
+    ▼
+coordinator.go: coordinate(ctx, ch)
+    │
+    ├─ selectCanonicalSignedState         (highest .State.Version across all chainDisputes)
+    ├─ retrieveSignedSubStates            (walks canonical.State.Locked in DFS order;
+    │                                       falls back to ch.archivedSubChStates if a
+    │                                       sub-channel was de-registered)
+    ├─ buildCoordSigs                     (coordSigs[0]=parent canonical, then DFS sub-states)
+    └─ multi.Coordinator.Coordinate(ctx, req, signedSubStates, coordSigs)
+              │
+              ▼
+        dispatch fans out one goroutine per asset's chain;
+        each calls ethchannel.Coordinator.Coordinate → on-chain coordinate() tx
+```
+
+The wall-clock dispute timer is intentional — it decouples the coordinator from each
+chain's block-production behaviour. Trade-off: in integration tests that fast-forward
+the chain clock (e.g. Hardhat's `evm_increaseTime`), the coordinator still sleeps the
+full `ChallengeDuration` seconds in real time. Use a short `ChallengeDuration` (1–15 s)
+in tests rather than minutes.
+
+### 13.6 Why the PoC keeps the inline simplified version
+
+Driving the real service from the PoC requires two preconditions:
+
+1. A running libp2p relay (`relay.perun.network:5574`) or an in-process `MockRelay`.
+2. `client.EnableCoordinationNotifier` installed before any `ProposeChannel`,
+   constructed via `NewRelayCoordinatorNotifier(acc, coordPeerID)` where
+   `coordPeerID` is the peer.ID printed by the running coordinator.
+
+The inline `CoordinatorService` in 9.3 sidesteps both by calling
+`multi.Coordinator.Coordinate` directly — exactly what `coordinator/coordinator.go:
+coordinate()` does after canonical-state selection. Both implementations produce the
+same on-chain effect; the production service layers libp2p transport, event-driven
+triggering, and channel lifecycle management on top.
+
+For a faithful end-to-end demo, prefer the libp2p wiring of 13.4. For a fast,
+self-contained correctness proof of the canonical-state-selection logic and the
+contract invariants, the inline version of 9.3 is sufficient.
+
+### 13.7 Known gaps and TODOs
+
+Fixed upstream (go-perun fork `>= a05990e2cb40`, this repo pulls it in via the
+`replace` directive in `go.mod`):
+
+| # | Location | Resolution |
+|---|---|---|
+| 1 | `go-perun/wire/net/libp2p/coordinator.go` | Hardcoded `const coordID = "coordinator"` removed. `RelayCoordinatorNotifier` now takes the coordinator's `peer.ID` at construction (`NewRelayCoordinatorNotifier(acc, coordPeerID)`) and returns a clear error if the field is unset. The coordinator's identity is now ordinary deployment config rather than a compile-time blocker — see §13.4. |
+| 2 | `channel` package | Exported typed sentinel `channel.ErrChannelAlreadyConcluded`. External coordinators can now match it with `errors.Is(err, channel.ErrChannelAlreadyConcluded)` instead of fragile substring matching. `coordinator/coordinator.go: isAlreadyConcluded` was updated to prefer the typed match and fall back to substring only for un-wrapped revert reasons; covered by `TestIsAlreadyConcluded_TypedSentinel`. |
+| 3 | `go-perun/channel/multi: dispatch()` | Switched to `errgroup.WithContext(ctx)`: all per-chain coordinate goroutines run to completion before the dispatch returns, the first error is reported, and the cancellable context is available to implementations that respect it. Our `c.coordinator.Coordinate(...)` call site inherits the better partial-failure semantics with no code change required. |
+
+Fixed in this repo:
+
+| # | Location | Resolution |
+|---|---|---|
+| 4 | `cross-chain-coordinator/coordinator/watcher.go: handleEventsFromChain` | **Fixed.** Loop now calls `NextWithKey()` every iteration so `ledgerKey` updates per event. The previous `for init; cond; post` form left `ledgerKey` frozen at the first event's value, silently corrupting per-chain dispute tracking. |
+| 5 | `cross-chain-coordinator/coordinator/host.go` | **Fixed.** Added `CoordinatorHost.Wait(timeout)` plus a per-call `coordinateTimeout` (`defaultCoordinateTimeout = 5 min`); every `coordinate()` invocation is tracked in `coordWg` and runs under `context.WithTimeout`. Callers (graceful shutdown, tests) invoke `Wait` before tearing down the underlying chain backend. |
+| 6 | `cross-chain-coordinator/backends/config.go: Validate` | **Fixed.** `chainURL` is now required and must start with `ws://` or `wss://`; `adjudicator_addr` must be non-empty. Covered by `TestValidate_HTTPChainURLRejected` / `_EmptyChainURLRejected` / `_WSSChainURLAccepted` / `_EmptyAdjudicatorAddrRejected`. |
+| 7 | `cross-chain-coordinator/main.go` | **Fixed.** The unused `-flush` flag (and the `flushInterval` parameter to `runRelay`) is removed. Persistence of watched channels across restarts is still missing and tracked separately. |
+
+Two additional bugs found during the audit and fixed:
+
+- **`coordinator/coordinator.go: coordinate()`** — `selectCanonicalSignedState` can
+  return `nil` when no chain has recorded a state yet. The previous code dereferenced
+  `canonical.State` unconditionally, panicking. Now guarded by
+  `if canonical == nil || canonical.State == nil`.
+- **`coordinator/watcher.go: handleEventsFromChain`** — see gap #4 above.
+
+#### Test-shutdown subscription nil-receipt panic
+
+The integration test (`coordinator/eth_integration_test.go: TestEthIntegration_FullFlow`)
+originally panicked in `perun-eth-backend/channel/contractbackend.go:176`
+(`receipt.Status` dereference) when `confirmNTimes` returned `(nil, nil)` after its
+header subscription closed mid-call. Root cause: the coordinator's `coordinate()` runs
+asynchronously, so its `ConfirmTransaction` was still in flight when the test torn
+down the simulated backend. `sb.Close()` triggered `ErrClientQuit` in the RPC
+subscription, which the go-perun stack converts to a nil error — propagated through
+`errors.WithMessage(nil, …) == nil` and crashing on `receipt.Status`.
+
+The fix combines two changes:
+1. **Cleanup ordering** — `t.Cleanup` is LIFO, so the test registers `sb.Close` first,
+   then `host.Wait(coordinateTimeout)`, then `host.stopWatching(id)`, then
+   `sb.StopMining`. On teardown the order is StopMining → stopWatching → Wait →
+   Close, so the coordinate goroutine drains before the backend dies.
+2. **Auto-mining instead of hand-rolled clock advance** — `sb.StartMining(50 ms)`
+   replaces the previous `for i := 0; i < 40; i++ { AdjustTime + Commit }` goroutine.
+   The hand-rolled version raced with `SendTransaction`'s auto-commit and occasionally
+   flooded the subscription channel; auto-mining matches the pattern used by
+   `perun-eth-backend`'s own `TestCoordinate_Basic`.
+
+---
+
 ## Audit Notes: Corrections from Previous Version
 
 The following errors were present in the original document and have been fixed:
 
-| # | Original error | Correction |
-|---|---|---|
-| 1 | Import path `perun.network/perun-eth-backend/adjudicator` | Correct: `github.com/perun-network/perun-eth-backend/channel` |
-| 2 | `ethadj.NewAdjudicator(acc, client, addr, chainID)` | Correct: `ethchannel.NewAdjudicator(ContractBackend, contract, receiver, txSender, gasLimit)` |
-| 3 | `NewCoordinatorAdjudicator` — doesn't exist | Correct: `ethchannel.NewCoordinator(...)` (same signature as `NewAdjudicator`) |
-| 4 | `ethfund.NewFunder(client, chainID, acc, assetAddr)` | Correct: `ethchannel.NewFunder(ContractBackend)` + `RegisterAsset` calls |
-| 5 | Custom `EthMultiAsset` struct | Correct: `ethchannel.NewAsset(chainID, assetHolderAddr)` implements `multi.Asset` |
-| 6 | Custom `EthLedgerBackendID` struct | Correct: `ethchannel.MakeLedgerBackendID(chainID)` |
-| 7 | `ethwallet.NewWallet()` (doesn't exist) | Correct: `simplewallet.NewWallet(privateKey...)` from `wallet/simple` package |
-| 8 | `hardhat_mine` advances block numbers only | Correct: timeouts use `block.timestamp`; use `evm_increaseTime + evm_mine` |
-| 9 | `register()` error: `"channel already coordinated"` | Correct: `"incorrect phase"` (from `registerSingle: dispute.phase == DISPUTE`) |
-| 10 | `coordinate()` only allows DISPUTE → COORDINATED | Correct: also allows COORDINATED → COORDINATED (idempotent, checks stateHash) |
-| 11 | `State.Params()` method used | Correct: `Params` must be stored separately; `*channel.State` has no `Params()` method |
-| 12 | Solidity `register()` ABI shows wrong params | Correct signature: `register(SignedState, SignedState[])` |
-| 13 | Go version `≥ 1.22` | Correct: `≥ 1.24` (go.mod uses `go 1.24.0`) |
-| 14 | Missing `go-ethereum-hdwallet` dependency | Added for Hardhat mnemonic key derivation |
-| 15 | Coordinator "races" to prevent Bob's v2 (Scenario A) | Correct: coordinator coordinates the HIGHEST known version uniformly (Scenario B) — this is what the actual tests implement |
-| 16 | `Watch(alice.Client)` — `*client.Client` does not implement `AdjudicatorEventHandler` | Correct: `Participant` now implements `HandleAdjudicatorEvent`; Watch calls use `alice`/`bob` directly |
-| 17 | Both `AdvanceTime` calls before `Register(v2)` — Chain A already frozen when Bob registers | Correct: Chain B's time advanced first, Bob registers v2 on Chain A while its window is still open, then Chain A's time advanced |
-| 18 | `_ = assert.True` stub assertions never ran | Correct: replaced with real `ctest.EqualBalancesWithDelta` calls in both tests |
-| 19 | Missing `"github.com/ethereum/go-ethereum/crypto"` in participant.go and coordinator.go imports | Correct: added; imports now sorted stdlib / external / internal |
-| 20 | `challengeDuration` comment said "seconds" without qualification | Correct: note added that ETH backend uses seconds; go-perun MockBackend uses milliseconds |
-| 21 | No wait for `CoordinatedEvent` before calling `Settle` | Correct: `require.Eventually` polls `chAliceBob.Phase() == channel.Coordinated` before Settle |
+| #   | Original error                                                                                  | Correction                                                                                                                       |
+| --- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Import path `perun.network/perun-eth-backend/adjudicator`                                       | Correct: `github.com/perun-network/perun-eth-backend/channel`                                                                    |
+| 2   | `ethadj.NewAdjudicator(acc, client, addr, chainID)`                                             | Correct: `ethchannel.NewAdjudicator(ContractBackend, contract, receiver, txSender, gasLimit)`                                    |
+| 3   | `NewCoordinatorAdjudicator` — doesn't exist                                                     | Correct: `ethchannel.NewCoordinator(...)` (same signature as `NewAdjudicator`)                                                   |
+| 4   | `ethfund.NewFunder(client, chainID, acc, assetAddr)`                                            | Correct: `ethchannel.NewFunder(ContractBackend)` + `RegisterAsset` calls                                                         |
+| 5   | Custom `EthMultiAsset` struct                                                                   | Correct: `ethchannel.NewAsset(chainID, assetHolderAddr)` implements `multi.Asset`                                                |
+| 6   | Custom `EthLedgerBackendID` struct                                                              | Correct: `ethchannel.MakeLedgerBackendID(chainID)`                                                                               |
+| 7   | `ethwallet.NewWallet()` (doesn't exist)                                                         | Correct: `simplewallet.NewWallet(privateKey...)` from `wallet/simple` package                                                    |
+| 8   | `hardhat_mine` advances block numbers only                                                      | Correct: timeouts use `block.timestamp`; use `evm_increaseTime + evm_mine`                                                       |
+| 9   | `register()` error: `"channel already coordinated"`                                             | Correct: `"incorrect phase"` (from `registerSingle: dispute.phase == DISPUTE`)                                                   |
+| 10  | `coordinate()` only allows DISPUTE → COORDINATED                                                | Correct: also allows COORDINATED → COORDINATED (idempotent, checks stateHash)                                                    |
+| 11  | `State.Params()` method used                                                                    | Correct: `Params` must be stored separately; `*channel.State` has no `Params()` method                                           |
+| 12  | Solidity `register()` ABI shows wrong params                                                    | Correct signature: `register(SignedState, SignedState[])`                                                                        |
+| 13  | Go version `≥ 1.22`                                                                             | Correct: `≥ 1.24` (go.mod uses `go 1.24.0`)                                                                                      |
+| 14  | Missing `go-ethereum-hdwallet` dependency                                                       | Added for Hardhat mnemonic key derivation                                                                                        |
+| 15  | Coordinator "races" to prevent Bob's v2 (Scenario A)                                            | Correct: coordinator coordinates the HIGHEST known version uniformly (Scenario B) — this is what the actual tests implement      |
+| 16  | `Watch(alice.Client)` — `*client.Client` does not implement `AdjudicatorEventHandler`           | Correct: `Participant` now implements `HandleAdjudicatorEvent`; Watch calls use `alice`/`bob` directly                           |
+| 17  | Both `AdvanceTime` calls before `Register(v2)` — Chain A already frozen when Bob registers      | Correct: Chain B's time advanced first, Bob registers v2 on Chain A while its window is still open, then Chain A's time advanced |
+| 18  | `_ = assert.True` stub assertions never ran                                                     | Correct: replaced with real `ctest.EqualBalancesWithDelta` calls in both tests                                                   |
+| 19  | Missing `"github.com/ethereum/go-ethereum/crypto"` in participant.go and coordinator.go imports | Correct: added; imports now sorted stdlib / external / internal                                                                  |
+| 20  | `challengeDuration` comment said "seconds" without qualification                                | Correct: note added that ETH backend uses seconds; go-perun MockBackend uses milliseconds                                        |
+| 21  | No wait for `CoordinatedEvent` before calling `Settle`                                          | Correct: `require.Eventually` polls `chAliceBob.Phase() == channel.Coordinated` before Settle                                    |

@@ -55,12 +55,26 @@ func (c Config) Validate() error {
 		return fmt.Errorf("load config: coordinators is required")
 	}
 	seen := make(map[string]struct{}, len(c.Coordinators))
-	for _, coord := range c.Coordinators {
+	for i, coord := range c.Coordinators {
 		k := fmt.Sprintf("%d/%d", coord.BackendID, coord.LedgerID)
 		if _, ok := seen[k]; ok {
 			return fmt.Errorf("load config: duplicate coordinator key %q", k)
 		}
 		seen[k] = struct{}{}
+
+		// chainURL must use a WebSocket transport. SubscribeNewHead (used by
+		// BlockTimeout.Wait and confirmNTimes in the ETH backend) only works
+		// over ws:// or wss://; HTTP transports silently fail at first use.
+		url := strings.TrimSpace(coord.ChainURL)
+		if url == "" {
+			return fmt.Errorf("load config: coordinators[%d]: chainURL is required", i)
+		}
+		if !strings.HasPrefix(url, "ws://") && !strings.HasPrefix(url, "wss://") {
+			return fmt.Errorf("load config: coordinators[%d]: chainURL must use ws:// or wss:// (got %q)", i, url)
+		}
+		if strings.TrimSpace(coord.AdjudicatorAddr) == "" {
+			return fmt.Errorf("load config: coordinators[%d]: adjudicator_addr is required", i)
+		}
 	}
 	return nil
 }
